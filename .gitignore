@@ -10,3 +10,4 @@ venv/
 env/
 
 app.bat
+app.ps1
