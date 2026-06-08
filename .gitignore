@@ -11,3 +11,6 @@ env/
 
 app.bat
 app.ps1
+build/
+dist/
+vault.spec

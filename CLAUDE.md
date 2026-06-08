@@ -1015,6 +1015,7 @@ graph TD
     main.py --> display.py
     main.py --> types.py
     executor.py --> tasks.py
+    executor.py --> types.py
     tasks.py --> cipher.py
     tasks.py --> manager.py
     tasks.py --> types.py
@@ -1027,6 +1028,7 @@ graph TD
     scanner.py --> constants.py
     display.py --> types.py
     parser.py --> constants.py
+    manager.py --> types.py
 ```
 
 ---
@@ -1081,7 +1083,7 @@ vault/
 │   │
 │   └── utils/
 │       ├── __init__.py
-│       └── types.py             # FileTask, TaskResult, Operation, RollbackResult,
+│       └── types.py             # FileTask, TaskResult, Operation,
 │                                # hierarquia de exceções (VaultError e subclasses)
 └── tests/
     ├── __init__.py
@@ -1090,11 +1092,11 @@ vault/
     ├── test_kdf.py              # 8 testes — derive_key()
     ├── test_crypto.py           # 21 testes — encrypt_file(), decrypt_file()
     ├── test_scanner.py          # 14 testes — scan_files(), group_by_directory()
-    ├── test_transactions.py     # 13 testes — commit(), rollback(), get_destination()
-    ├── test_pipeline.py         # 16 testes — execute_task() todos os cenários
+    ├── test_transactions.py     # 14 testes — commit(), rollback(), get_destination()
+    ├── test_pipeline.py         # 12 testes — execute_task() todos os cenários
     ├── test_workers.py          # 7 testes  — run_parallel()
-    ├── test_cli.py              # 25 testes — parser, validate_*()
-    └── test_integration.py      # 18 testes — E2E: roundtrip, dirs, erros, permissões
+    ├── test_cli.py              # 33 testes — parser, validate_*()
+    └── test_integration.py      # 15 testes — E2E: roundtrip, dirs, erros, permissões
 ```
 
 ### Responsabilidade de Cada Módulo
@@ -1108,7 +1110,7 @@ vault/
 | `crypto/kdf.py` | `derive_key()`. Uma função, uma responsabilidade. |
 | `crypto/cipher.py` | `encrypt_file()`, `decrypt_file()`. Leitura chunked → BytesIO. |
 | `storage/scanner.py` | `scan_files()`, `group_by_directory()`. Sem I/O de escrita. |
-| `transactions/manager.py` | `get_destination()`, `commit()`, `rollback()`. Único módulo que grava em disco. |
+| `transactions/manager.py` | `get_destination()`, `commit()`, `rollback()`, `RollbackResult`. Único módulo que grava em disco. |
 | `pipeline/tasks.py` | `execute_task()`. Orquestra pre-flight + process + commit. Isola erros. |
 | `workers/executor.py` | `run_parallel()`. ThreadPoolExecutor + SIGINT. Callbacks de progresso. |
 | `progress/display.py` | Toda a interface visual Rich. Sem lógica de negócio. |
@@ -1256,6 +1258,10 @@ class TaskResult:
     success: bool
     error: Exception | None = None
     # Propriedades alias: .source, .destination, .operation
+```
+
+```python
+# src/transactions/manager.py
 
 @dataclass(frozen=True)
 class RollbackResult:
@@ -1666,10 +1672,10 @@ Status: Não identificado no histórico ou no código analisado.
 
 | Tipo | Quantidade | Ferramentas |
 |---|---|---|
-| Unitários (KDF, cipher, scanner, transactions, validators, parser) | ~81 | pytest |
-| Pipeline (execute_task) | 16 | pytest |
+| Unitários (KDF, cipher, scanner, transactions, validators, parser) | 90 | pytest |
+| Pipeline (execute_task) | 12 | pytest |
 | Workers (run_parallel) | 7 | pytest |
-| Integração E2E | 18 | pytest + tmp_path |
+| Integração E2E | 15 | pytest + tmp_path |
 | **Total** | **122 passando, 2 pulados** | |
 
 Os 2 testes pulados são os de permissão de arquivo (`test_permissions`),
@@ -1901,9 +1907,11 @@ files_progress.add_task("", name=name, total=size)
 ### Descoberta 1 — Thread Safety do Progress Manager
 
 `rich.Progress` é thread-safe para `add_task()`, `remove_task()` e `advance()`.
-O lock adicional em `ProgressManager._lock` protege apenas o dicionário
-`prog_id_map` em `src/main.py` (acesso compartilhado entre worker threads para
-`on_start`/`on_advance` e main thread para `on_done`).
+O lock adicional em `ProgressManager._lock` protege as chamadas a `add_task()` e
+`remove_task()` dentro de `ProgressManager`. O mapeamento `exec_id → TaskID`
+(`prog_id_map`) em `src/main.py` é protegido por um lock separado (`map_lock`),
+necessário porque `on_start` e `on_advance` são chamados de worker threads enquanto
+`on_done` é chamado do thread principal no loop `as_completed`.
 
 Não há race condition entre `on_advance` e `on_done` para o mesmo `exec_id` porque
 `on_done` só é chamado após o future estar completamente resolvido — garantindo que
@@ -2132,6 +2140,11 @@ PLAINTEXT_SUFFIXES = frozenset({".txt", ".md"})
 ENCRYPTED_COMPOUND_SUFFIXES = (".txt.vt", ".md.vt")
 ALL_VALID_SUFFIXES = (".txt", ".md", ".txt.vt", ".md.vt")
 
+# RollbackResult pertence a src/transactions/manager.py (não a utils/types.py)
+# Definida como @dataclass(frozen=True) com campos:
+#   buffer_closed: bool, dest_was_present: bool, dest_cleaned: bool
+#   propriedade fully_clean → bool
+
 # Derivação de caminhos em manager.py
 # Encrypt:
 dest = source.parent / (source.name + ".vt")
@@ -2221,4 +2234,3 @@ Após completar todas as etapas, verificar cada item:
 - [ ] Encrypt de `.txt.vt`: erro "arquivo já criptografado"
 - [ ] Decrypt de `.txt`: erro "arquivo não criptografado"
 - [ ] Arquivo inexistente: erro "Path does not exist"
-
